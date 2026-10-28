@@ -1,0 +1,48 @@
+{
+  "plugins": [
+    {
+      "file_path": "PluginAudius",
+      "plugin_type": "comms",
+      "file_type": "shared_library",
+      "node_type": "any",
+      "shared_library_path": "libPluginAudius.so",
+      "channels": [],
+      "transports": ["audius"],
+      "usermodels": [],
+      "encodings": []
+    }
+  ],
+  "channel_properties": {
+    "audiusComposition": {
+      "channelGid": "audiusComposition",
+      "bootstrap": false,
+      "connectionType": "CT_INDIRECT",
+      "linkDirection": "LD_CREATOR_TO_LOADER",
+      "transmissionType": "TT_MULTICAST",
+      "sendType": "ST_STORED_ASYNC",
+      "reliable": true,
+      "isFlushable": false,
+      "duration_s": -1,
+      "period_s": -1,
+      "mtu": -1,
+      "maxLinks": 10,
+      "supportedHints": [],
+      "creatorExpected": {
+        "send": {"bandwidth_bps": 1000000, "latency_ms": 10000, "loss": 0.0},
+        "receive": {"bandwidth_bps": 1000000, "latency_ms": 10000, "loss": 0.0}
+      },
+      "loaderExpected": {
+        "send": {"bandwidth_bps": 1000000, "latency_ms": 10000, "loss": 0.0},
+        "receive": {"bandwidth_bps": 1000000, "latency_ms": 10000, "loss": 0.0}
+      }
+    }
+  },
+  "compositions": [
+    {
+      "id": "audiusComposition",
+      "transport": "audius",
+      "usermodel": "twoSixFileBasedUserModel",
+      "encodings": ["noop"]
+    }
+  ]
+}
