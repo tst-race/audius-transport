@@ -39,8 +39,10 @@ class ServiceClient {
 public:
     virtual ~ServiceClient() = default;
 
-    // Idempotent: succeeds if the container already exists and is usable.
-    virtual void createContainer(const std::string &containerId) = 0;
+    // Idempotent: creates the service-side container and returns its service-assigned id.
+    // For services that assign the id server-side (Audius), the returned id is the container id
+    // to use for post/fetch/delete and to publish in the link address. The hint may be ignored.
+    virtual std::string createContainer(const std::string &containerIdHint = "") = 0;
     virtual bool containerExists(const std::string &containerId) = 0;
     virtual void deleteContainer(const std::string &containerId) = 0;
 

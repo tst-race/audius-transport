@@ -10,9 +10,11 @@
 // or credentials. Message ids are zero-padded counters, so lexical order == post order.
 class InMemoryServiceClient : public ServiceClient {
 public:
-    void createContainer(const std::string &containerId) override {
+    std::string createContainer(const std::string &containerIdHint = "") override {
         std::lock_guard<std::mutex> lock(mutex);
-        containers[containerId];
+        std::string id = containerIdHint.empty() ? ("box-" + std::to_string(++counter)) : containerIdHint;
+        containers[id];
+        return id;
     }
 
     bool containerExists(const std::string &containerId) override {
