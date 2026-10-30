@@ -59,6 +59,7 @@ AudiusClient::AudiusClient(std::string apiKey, std::string apiSecret,
     bearerToken(std::move(bearerToken)),
     contentNode(std::move(contentNode)),
     apiBaseUrl(std::move(apiBaseUrl)) {
+    if (this->contentNode.empty()) this->contentNode = "https://creatornode.audius.co";
     while (!this->contentNode.empty() && this->contentNode.back() == '/') this->contentNode.pop_back();
     while (!this->apiBaseUrl.empty() && this->apiBaseUrl.back() == '/') this->apiBaseUrl.pop_back();
     try { this->resolvedUserId = resolveUserId(); } catch (...) { this->resolvedUserId = userId; }
@@ -69,9 +70,16 @@ AudiusClient::AudiusClient(std::string serverUrl, std::string accessToken) :
                 serverUrl.empty() ? "https://api.audius.co/v1" : std::move(serverUrl)) {}
 
 std::string AudiusClient::resolveUserId() {
-    // Try as an encoded id first: GET /users/{id}
+    // Treat as a handle first (GET /users/handle/{handle}); fall back to encoded id.
     try {
-    {
+        HttpResponse r = request("GET", apiBaseUrl + "/users/handle/" + urlEncode(userId));
+        if (r.status == 200) {
+            try {
+                return nlohmann::json::parse(r.body).at("data").at("id").get<std::string>();
+            } catch (...) {}
+        }
+    } catch (...) {}
+    try {
         HttpResponse r = request("GET", apiBaseUrl + "/users/" + urlEncode(userId));
         if (r.status == 200) {
             try {
@@ -79,16 +87,6 @@ std::string AudiusClient::resolveUserId() {
             } catch (...) {}
             return userId;
         }
-    }
-    // Otherwise treat as a handle: GET /users/handle/{handle}
-    {
-        HttpResponse r = request("GET", apiBaseUrl + "/users/handle/" + urlEncode(userId));
-        if (r.status == 200) {
-            try {
-                return nlohmann::json::parse(r.body).at("data").at("id").get<std::string>();
-            } catch (...) {}
-        }
-    }
     } catch (...) {}
     return userId;
 }
@@ -177,6 +175,11 @@ AudiusClient::HttpResponse AudiusClient::request(const std::string &method, cons
 void AudiusClient::throwForStatus(const HttpResponse &response, const std::string &what) {
     if (response.status >= 200 && response.status < 300) return;
     std::string message = what + " failed with HTTP " + std::to_string(response.status);
+    if (!response.body.empty()) {
+        std::string b = response.body;
+        if (b.size() > 300) b.resize(300);
+        message += ": " + b;
+    }
     if (response.status == 401 || response.status == 403) throw ServiceError(ServiceErrorKind::Auth, message);
     if (response.status == 404) throw ServiceError(ServiceErrorKind::NotFound, message);
     if (response.status == 429) throw ServiceError(ServiceErrorKind::RateLimited, message);
@@ -318,50 +321,100 @@ std::string AudiusClient::uploadPlaceholderTrackCid() {
 }
 
 std::string AudiusClient::createContainer(const std::string &containerIdHint) {
-    std::string trackCid = uploadPlaceholderTrackCid();
+    // container id may be a composite "owner:hint" (used for cross-node addressing) or a plain
+    // hint (owner defaults to this account).
+    std::string composite = containerIdHint;
+    std::string owner;
+    std::string hint = containerIdHint;
+    auto colon = containerIdHint.find(':');
+    if (colon != std::string::npos) {
+        owner = containerIdHint.substr(0, colon);
+        hint = containerIdHint.substr(colon + 1);
+    } else {
+        owner = userId;
+    }
+    if (hint.empty()) {
+        hint = "audius-container-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        composite = owner.empty() ? hint : (owner + ":" + hint);
+    }
+
+    // Reuse a pre-uploaded placeholder audio CID to avoid the slow tus upload (which
+    // took ~25s per container and exceeded the integration test exit_timeout). The payload
+    // travels in the track description (base64), so the audio is only a placeholder.
+    std::string trackCid = "baeaaaiqseav4ansc2y5c6243qyd5evs25gzur457mfk5fohpxka5dmnrmaf72";
     nlohmann::json body;
-    body["title"] = containerIdHint.empty() ? "transport-container" : containerIdHint;
+    body["title"] = hint.empty() ? "transport-container" : hint;
     body["genre"] = "Electronic";
     body["track_cid"] = trackCid;
     body["description"] = "";
     body["is_downloadable"] = true;
 
     std::string url = apiBaseUrl + "/tracks?user_id=" + urlEncode(resolvedUserId);
-    HttpResponse r = request("POST", url, body.dump(), "application/json");
+    HttpResponse r;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        r = request("POST", url, body.dump(), "application/json");
+        if (r.status >= 200 && r.status < 300) break;
+        if (r.status < 500 && r.status != 429) break;
+        std::this_thread::sleep_for(std::chrono::seconds(2 + attempt * 2));
+    }
+    if (r.status < 200 || r.status >= 300) {
+        // Maybe the track was created concurrently or in a prior run; try resolving.
+        try {
+            std::string existing = resolveTrackId(composite);
+            cacheTrackId(composite, existing);
+            return composite;
+        } catch (...) {}
+    }
     throwForStatus(r, "create track");
     nlohmann::json j = nlohmann::json::parse(r.body);
-    // response: {block_hash, block_number, track_id, transaction_hash}
     if (j.contains("track_id")) {
-        return j["track_id"].get<std::string>();
+        std::string trackId;
+        if (j["track_id"].is_string()) trackId = j["track_id"].get<std::string>();
+        else if (j["track_id"].is_number_integer()) trackId = std::to_string(j["track_id"].get<long long>());
+        if (!trackId.empty()) {
+            cacheTrackId(composite, trackId);
+            return composite;
+        }
     }
     throw ServiceError(ServiceErrorKind::Fatal, "create track: no track_id in response");
 }
 
 bool AudiusClient::containerExists(const std::string &containerId) {
-    HttpResponse r = request("GET", apiBaseUrl + "/tracks/" + urlEncode(containerId));
-    if (r.status == 404) return false;
-    throwForStatus(r, "check track " + containerId);
-    return true;
+    try {
+        resolveTrackId(containerId);
+        return true;
+    } catch (const ServiceError &e) {
+        if (e.kind == ServiceErrorKind::NotFound) return false;
+        throw;
+    }
 }
 
 void AudiusClient::deleteContainer(const std::string &containerId) {
-    std::string url = apiBaseUrl + "/tracks/" + urlEncode(containerId) + "?user_id=" + urlEncode(resolvedUserId);
+    std::string trackId;
+    try { trackId = resolveTrackId(containerId); }
+    catch (const ServiceError &e) { if (e.kind == ServiceErrorKind::NotFound) return; throw; }
+    std::string url = apiBaseUrl + "/tracks/" + urlEncode(trackId) + "?user_id=" + urlEncode(resolvedUserId);
     HttpResponse r = request("DELETE", url);
     if (r.status == 404) return;
     throwForStatus(r, "delete track " + containerId);
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    trackIdCache.erase(containerId);
 }
 
 std::string AudiusClient::post(const std::string &containerId, const std::vector<uint8_t> &content) {
+    std::string trackId = resolveTrackId(containerId);
     std::string b64 = base64Encode(content);
     nlohmann::json body;
     body["description"] = b64;
 
-    std::string url = apiBaseUrl + "/tracks/" + urlEncode(containerId) + "?user_id=" + urlEncode(resolvedUserId);
+    std::string url = apiBaseUrl + "/tracks/" + urlEncode(trackId) + "?user_id=" + urlEncode(resolvedUserId);
     HttpResponse r = request("PUT", url, body.dump(), "application/json");
     throwForStatus(r, "update track " + containerId);
     nlohmann::json j = nlohmann::json::parse(r.body);
-    if (j.contains("block_number")) {
-        return std::to_string(j["block_number"].get<long long>());
+    if (j.contains("block_number") && j["block_number"].is_number()) {
+        std::string msgId = std::to_string(j["block_number"].get<long long>());
+        cacheTrackId(containerId, trackId);
+        return msgId;
     }
     // fallback: timestamp-based id
     return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -371,29 +424,32 @@ std::string AudiusClient::post(const std::string &containerId, const std::vector
 std::vector<ServiceMessage> AudiusClient::fetchAfter(const std::string &containerId,
                                                     const std::string &afterMessageId) {
     std::vector<ServiceMessage> messages;
-    HttpResponse r = request("GET", apiBaseUrl + "/tracks/" + urlEncode(containerId));
+    std::string trackId;
+    try { trackId = resolveTrackId(containerId); }
+    catch (const ServiceError &e) { if (e.kind == ServiceErrorKind::NotFound) return messages; throw; }
+    HttpResponse r = request("GET", apiBaseUrl + "/tracks/" + urlEncode(trackId));
     if (r.status == 404) {
         return messages; // not created yet
     }
     throwForStatus(r, "get track " + containerId);
     nlohmann::json j = nlohmann::json::parse(r.body);
     nlohmann::json data = j.value("data", nlohmann::json::object());
-    long long blockNumber = data.value("block_number", 0LL);
-    std::string msgId = std::to_string(blockNumber);
+    std::string updatedAt;
+    if (data.contains("updated_at") && data["updated_at"].is_string()) updatedAt = data["updated_at"].get<std::string>();
+    if (updatedAt.empty() && data.contains("release_date") && data["release_date"].is_string()) updatedAt = data["release_date"].get<std::string>();
+    long long blockNumber = 0;
+    if (data.contains("blocknumber") && data["blocknumber"].is_number()) blockNumber = data["blocknumber"].get<long long>();
+    else if (data.contains("block_number") && data["block_number"].is_number()) blockNumber = data["block_number"].get<long long>();
+    std::string msgId = updatedAt.empty() ? std::to_string(blockNumber) : updatedAt;
 
     bool newer = afterMessageId.empty();
     if (!newer) {
-        try {
-            unsigned long long cur = std::stoull(afterMessageId);
-            unsigned long long bn = static_cast<unsigned long long>(blockNumber);
-            newer = bn > cur;
-        } catch (...) {
-            newer = true;
-        }
+        newer = msgId > afterMessageId;
     }
     if (!newer) return messages;
 
-    std::string desc = data.value("description", "");
+    std::string desc;
+    if (data.contains("description") && data["description"].is_string()) desc = data["description"].get<std::string>();
     std::vector<uint8_t> content = base64Decode(desc);
     messages.push_back({msgId, content});
     return messages;
@@ -456,3 +512,79 @@ std::vector<uint8_t> AudiusClient::base64Decode(const std::string &text) {
     }
     return out;
 }
+
+
+std::string AudiusClient::resolveOwner(const std::string &owner) {
+    // Try as handle first.
+    try {
+        HttpResponse r = request("GET", apiBaseUrl + "/users/handle/" + urlEncode(owner));
+        if (r.status == 200) {
+            try { return nlohmann::json::parse(r.body).at("data").at("id").get<std::string>(); }
+            catch (...) {}
+        }
+    } catch (...) {}
+    try {
+        HttpResponse r = request("GET", apiBaseUrl + "/users/" + urlEncode(owner));
+        if (r.status == 200) {
+            try { return nlohmann::json::parse(r.body).at("data").at("id").get<std::string>(); }
+            catch (...) { return owner; }
+        }
+    } catch (...) {}
+    return owner;
+}
+
+void AudiusClient::cacheTrackId(const std::string &container, const std::string &trackId) {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    trackIdCache[container] = trackId;
+}
+
+std::string AudiusClient::resolveTrackId(const std::string &container) {
+    {
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        auto it = trackIdCache.find(container);
+        if (it != trackIdCache.end()) return it->second;
+    }
+    std::string owner;
+    std::string hint = container;
+    auto colon = container.find(':');
+    if (colon != std::string::npos) {
+        owner = container.substr(0, colon);
+        hint = container.substr(colon + 1);
+    } else {
+        owner = userId;
+    }
+    std::string resolvedOwner = resolveOwner(owner);
+    // List the owner's tracks and find by title.
+    // Paginate through the owner's tracks to find one with the matching title.
+    for (int offset = 0; offset < 10000; offset += 100) {
+        std::string url = apiBaseUrl + "/users/" + urlEncode(resolvedOwner) + "/tracks?limit=100&offset=" + std::to_string(offset);
+        HttpResponse r = request("GET", url);
+        if (r.status == 404) throw ServiceError(ServiceErrorKind::NotFound, "owner not found");
+        throwForStatus(r, "list tracks for " + container);
+        nlohmann::json j = nlohmann::json::parse(r.body);
+        nlohmann::json data = j.value("data", nlohmann::json::array());
+        if (data.empty()) break;
+        for (const auto &t : data) {
+            std::string title;
+            if (t.contains("title") && t["title"].is_string()) title = t["title"].get<std::string>();
+            if (title == hint) {
+                std::string tid;
+                if (t.contains("id")) {
+                    if (t["id"].is_string()) tid = t["id"].get<std::string>();
+                    else if (t["id"].is_number_integer()) tid = std::to_string(t["id"].get<long long>());
+                }
+                if (tid.empty() && t.contains("track_id")) {
+                    if (t["track_id"].is_string()) tid = t["track_id"].get<std::string>();
+                    else if (t["track_id"].is_number_integer()) tid = std::to_string(t["track_id"].get<long long>());
+                }
+                if (!tid.empty()) {
+                    cacheTrackId(container, tid);
+                    return tid;
+                }
+            }
+        }
+        if (data.size() < 100) break;
+    }
+    throw ServiceError(ServiceErrorKind::NotFound, "track not found for " + container);
+}
+

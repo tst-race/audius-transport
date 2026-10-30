@@ -191,23 +191,35 @@ TEST_F(TestPluginAudius, doAction_on_unknown_link_is_an_error_but_cleanup_is_not
     EXPECT_EQ(COMPONENT_OK, plugin->doAction({}, makeAction(R"({"linkId": "*", "type": "fetch"})")));
 }
 
-TEST_F(TestPluginAudius, requests_server_and_token_then_starts) {
-    EXPECT_CALL(sdk, requestPluginUserInput("server", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 11}));
-    EXPECT_CALL(sdk, requestPluginUserInput("token", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 12}));
+TEST_F(TestPluginAudius, requests_credentials_then_starts) {
+    EXPECT_CALL(sdk, requestPluginUserInput("apiKey", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 11}));
+    EXPECT_CALL(sdk, requestPluginUserInput("apiSecret", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 12}));
+    EXPECT_CALL(sdk, requestPluginUserInput("userId", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 13}));
+    EXPECT_CALL(sdk, requestPluginUserInput("bearerToken", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 14}));
+    EXPECT_CALL(sdk, requestPluginUserInput("contentNode", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 15}));
     PluginAudius plugin(&sdk);
 
     EXPECT_CALL(sdk, updateState(COMPONENT_STATE_STARTED));
-    EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(11, true, "http://service.example"));
+    EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(11, true, "key"));
     EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(12, true, "secret"));
+    EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(13, true, "user"));
+    EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(14, true, ""));
+    EXPECT_EQ(COMPONENT_OK, plugin.onUserInputReceived(15, true, ""));
 }
 
 TEST_F(TestPluginAudius, fails_when_a_required_parameter_is_missing) {
-    EXPECT_CALL(sdk, requestPluginUserInput("server", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 11}));
-    EXPECT_CALL(sdk, requestPluginUserInput("token", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 12}));
+    EXPECT_CALL(sdk, requestPluginUserInput("apiKey", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 11}));
+    EXPECT_CALL(sdk, requestPluginUserInput("apiSecret", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 12}));
+    EXPECT_CALL(sdk, requestPluginUserInput("userId", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 13}));
+    EXPECT_CALL(sdk, requestPluginUserInput("bearerToken", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 14}));
+    EXPECT_CALL(sdk, requestPluginUserInput("contentNode", _, _)).WillOnce(Return(ChannelResponse{CM_OK, 15}));
     PluginAudius plugin(&sdk);
 
     EXPECT_CALL(sdk, updateState(COMPONENT_STATE_FAILED));
-    plugin.onUserInputReceived(11, true, "http://service.example");
-    plugin.onUserInputReceived(12, false, "");
+    plugin.onUserInputReceived(11, true, "key");
+    plugin.onUserInputReceived(12, true, "secret");
+    plugin.onUserInputReceived(13, false, "");
+    plugin.onUserInputReceived(14, true, "");
+    plugin.onUserInputReceived(15, true, "");
     EXPECT_EQ(COMPONENT_ERROR, plugin.onUserInputReceived(99, true, "stray"));
 }

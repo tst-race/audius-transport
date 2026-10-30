@@ -5,13 +5,13 @@
   "timeout": 120,
   "network": {
     "name": "audius-send-recv-network",
-    "subnet": "10.30.2.0/24"
+    "subnet": "10.50.2.0/24"
   },
   "nodes": [
     {
       "role": "listener",
       "id": "audius-send-recv-listener",
-      "ip": "10.30.2.3",
+      "ip": "10.50.2.3",
       "slots": {
         "channel": "audiusComposition"
       }
@@ -19,7 +19,7 @@
     {
       "role": "connector",
       "id": "audius-send-recv-connector",
-      "ip": "10.30.2.2",
+      "ip": "10.50.2.2",
       "slots": {
         "channel": "audiusComposition"
       }

@@ -59,9 +59,11 @@ PluginAudius::PluginAudius(ITransportSdk *sdk) :
 
     // Answers come from `race-cli --param <composition id>.<key>=<value>` (the composition id from
     // manifest.json, NOT the plugin/library name) and arrive asynchronously in onUserInputReceived.
-    // TODO(service): request exactly the inputs the service needs and nothing secret in defaults.
-    serverHandle = sdk->requestPluginUserInput("server", "Base URL of the service", false).handle;
-    tokenHandle = sdk->requestPluginUserInput("token", "Access token for the service", true).handle;
+    apiKeyHandle = sdk->requestPluginUserInput("apiKey", "Audius developer app API key", false).handle;
+    apiSecretHandle = sdk->requestPluginUserInput("apiSecret", "Audius developer app API secret", true).handle;
+    userIdHandle = sdk->requestPluginUserInput("userId", "Audius user id owning this node's tracks", false).handle;
+    bearerTokenHandle = sdk->requestPluginUserInput("bearerToken", "Optional Audius bearer token", true).handle;
+    contentNodeHandle = sdk->requestPluginUserInput("contentNode", "Optional Audius content node URL", false).handle;
 }
 
 PluginAudius::PluginAudius(ITransportSdk *sdk, std::shared_ptr<ServiceClient> client) :
@@ -83,14 +85,26 @@ ComponentStatus PluginAudius::onUserInputReceived(RaceHandle handle, bool answer
                                                 const std::string &response) {
     TRACE_METHOD(handle, answered);
 
-    if (handle == serverHandle) {
-        serverHandle = NULL_RACE_HANDLE;
-        serverAnswered = answered && !response.empty();
-        server = response;
-    } else if (handle == tokenHandle) {
-        tokenHandle = NULL_RACE_HANDLE;
-        tokenAnswered = answered && !response.empty();
-        token = response;
+    if (handle == apiKeyHandle) {
+        apiKeyHandle = NULL_RACE_HANDLE;
+        apiKeyAnswered = true;
+        apiKey = response;
+    } else if (handle == apiSecretHandle) {
+        apiSecretHandle = NULL_RACE_HANDLE;
+        apiSecretAnswered = true;
+        apiSecret = response;
+    } else if (handle == userIdHandle) {
+        userIdHandle = NULL_RACE_HANDLE;
+        userIdAnswered = true;
+        userId = response;
+    } else if (handle == bearerTokenHandle) {
+        bearerTokenHandle = NULL_RACE_HANDLE;
+        bearerTokenAnswered = true;
+        bearerToken = response;
+    } else if (handle == contentNodeHandle) {
+        contentNodeHandle = NULL_RACE_HANDLE;
+        contentNodeAnswered = true;
+        contentNode = response;
     } else {
         logWarning(logPrefix + "Unknown user input handle " + std::to_string(handle));
         return COMPONENT_ERROR;
@@ -101,15 +115,17 @@ ComponentStatus PluginAudius::onUserInputReceived(RaceHandle handle, bool answer
 }
 
 void PluginAudius::finishStartupIfInputsReceived() {
-    if (serverHandle != NULL_RACE_HANDLE || tokenHandle != NULL_RACE_HANDLE) {
+    if (apiKeyHandle != NULL_RACE_HANDLE || apiSecretHandle != NULL_RACE_HANDLE ||
+        userIdHandle != NULL_RACE_HANDLE || bearerTokenHandle != NULL_RACE_HANDLE ||
+        contentNodeHandle != NULL_RACE_HANDLE) {
         return;  // still waiting for an answer
     }
-    if (!serverAnswered || !tokenAnswered) {
-        logError(logPrefix + "Missing required parameter(s): server and token are both required");
+    if (apiKey.empty() || apiSecret.empty() || userId.empty()) {
+        logError(logPrefix + "Missing required parameter(s): apiKey, apiSecret and userId are required");
         sdk->updateState(COMPONENT_STATE_FAILED);
         return;
     }
-    serviceClient = std::make_shared<AudiusClient>(server, token);
+    serviceClient = std::make_shared<AudiusClient>(apiKey, apiSecret, userId, bearerToken, contentNode);
     ready = true;
     sdk->updateState(COMPONENT_STATE_STARTED);
     logInfo(logPrefix + "Ready");
@@ -183,9 +199,8 @@ ComponentStatus PluginAudius::createLink(RaceHandle handle, const LinkID &linkId
     }
 
     LinkAddress address;
-    address.container = randomContainerId();
     try {
-        serviceClient->createContainer(address.container);
+        address.container = serviceClient->createContainer("");
     } catch (const std::exception &error) {
         logError(prefix + "could not create container: " + error.what());
         sdk->onLinkStatusChanged(handle, linkId, LINK_DESTROYED, {});
@@ -246,7 +261,7 @@ ComponentStatus PluginAudius::createLinkFromAddress(RaceHandle handle, const Lin
     bool ownsContainer = false;
     try {
         if (!serviceClient->containerExists(address.container)) {
-            serviceClient->createContainer(address.container);
+            address.container = serviceClient->createContainer(address.container);
             ownsContainer = true;
         }
     } catch (const std::exception &error) {

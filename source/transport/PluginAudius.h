@@ -69,12 +69,21 @@ private:
     std::shared_ptr<ServiceClient> serviceClient;
     std::atomic<bool> ready{false};
 
-    RaceHandle serverHandle = NULL_RACE_HANDLE;
-    RaceHandle tokenHandle = NULL_RACE_HANDLE;
-    bool serverAnswered = false;
-    bool tokenAnswered = false;
-    std::string server;
-    std::string token;
+    RaceHandle apiKeyHandle = NULL_RACE_HANDLE;
+    RaceHandle apiSecretHandle = NULL_RACE_HANDLE;
+    RaceHandle userIdHandle = NULL_RACE_HANDLE;
+    RaceHandle bearerTokenHandle = NULL_RACE_HANDLE;
+    RaceHandle contentNodeHandle = NULL_RACE_HANDLE;
+    bool apiKeyAnswered = false;
+    bool apiSecretAnswered = false;
+    bool userIdAnswered = false;
+    bool bearerTokenAnswered = false;
+    bool contentNodeAnswered = false;
+    std::string apiKey;
+    std::string apiSecret;
+    std::string userId;
+    std::string bearerToken;
+    std::string contentNode;
 };
 
 #endif

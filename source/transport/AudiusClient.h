@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,13 @@ private:
     std::string bearerToken;
     std::string contentNode;
     std::string apiBaseUrl;
+
+    // hint -> track_id cache and helpers
+    std::string resolveOwner(const std::string &owner);
+    std::string resolveTrackId(const std::string &container);
+    void cacheTrackId(const std::string &container, const std::string &trackId);
+    std::map<std::string, std::string> trackIdCache;
+    std::mutex cacheMutex;
 };
 
 #endif
